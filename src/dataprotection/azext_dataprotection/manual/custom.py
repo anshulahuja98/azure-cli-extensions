@@ -13,6 +13,7 @@
 # pylint: disable=too-many-nested-blocks
 # pylint: disable=no-else-continue
 # pylint: disable=no-else-raise
+import json
 import time
 from azure.cli.core.azclierror import (
     RequiredArgumentMissingError,
@@ -31,6 +32,7 @@ from azext_dataprotection.vendored_sdks.resourcegraph.models import \
     QueryRequest, QueryRequestOptions
 from azext_dataprotection.manual import backupcenter_helper, helpers as helper
 from azext_dataprotection.aaz.latest.dataprotection.backup_vault import Show as BackupVaultGet
+from src.dataprotection.azext_dataprotection.manual.enums import CONST_RECOMMENDED
 
 logger = get_logger(__name__)
 
@@ -1015,3 +1017,8 @@ def restore_initialize_for_item_recovery(cmd, datasource_type, source_datastore,
                                                                                                    vaulted_blob_prefix_pattern)
 
     return restore_request
+
+def dataprotection_enable_backup(cmd, datasource_uri: str, backup_strategy=CONST_RECOMMENDED, configuration_params=None):
+    
+    from azext_dataprotection.manual.aks.akshelper import dataprotection_enable_backup_helper
+    dataprotection_enable_backup_helper( datasource_uri, backup_strategy, configuration_params)

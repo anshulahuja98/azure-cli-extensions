@@ -42,7 +42,8 @@ from azext_dataprotection.manual.enums import (
     get_permission_scope_values,
     get_resource_type_values,
     get_persistent_volume_restore_mode_values,
-    get_conflict_policy_values
+    get_conflict_policy_values,
+    backup_presets,
 )
 
 vault_name_type = CLIArgumentType(help='Name of the backup vault.', options_list=['--vault-name', '-v'], type=str)
@@ -161,6 +162,12 @@ def load_arguments(self, _):
                    'json-string/@json-file. Required when --operation is Backup')
         c.argument('restore_request_object', type=validate_file_or_dict, help='Request body for operation "Restore" Expected value: '
                    'json-string/@json-file. Required when --operation is Restore')
+        
+    ## dataprotection enable-backup
+    with self.argument_context('dataprotection enable-backup') as c:
+        c.argument('datasource_uri', type=str, help="The URI of the datasource to be backed up.")
+        c.argument("backup_strategy", arg_type=get_enum_type(backup_presets), help="Backup strategy for the cluster. Defaults to Recommended.")
+        c.argument('configuration_parameters', type=validate_file_or_dict, help="Workload specific configuration overrides.")
 
     with self.argument_context('dataprotection job show') as c:
         c.argument('resource_group_name', resource_group_name_type)

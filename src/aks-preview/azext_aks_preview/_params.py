@@ -23,6 +23,11 @@ from azure.cli.command_modules.acs._validators import (
     validate_nat_gateway_idle_timeout,
     validate_nat_gateway_managed_outbound_ip_count,
 )
+
+from azext_dataprotection.manual.enums import (
+    backup_presets
+)
+
 from azure.cli.core.commands.parameters import (
     edge_zone_type,
     file_type,
@@ -129,6 +134,7 @@ from azext_aks_preview._consts import (
     CONST_TLS_MANAGEMENT_MANAGED,
     CONST_TLS_MANAGEMENT_NONE,
 )
+from azure.cli.core.commands.validators import validate_file_or_dict
 from azext_aks_preview._validators import (
     validate_acr,
     validate_addon,
@@ -1415,6 +1421,9 @@ def load_arguments(self, _):
                 'For more information on "Auto" mode see aka.ms/aks/nap.'
             )
         )
+        c.argument("enable_backup", help="Enable backup for the cluster", is_preview=True, action="store_true")
+        c.argument("backup_strategy", arg_type=get_enum_type(backup_presets), help="Backup strategy for the cluster. Defaults to Recommended.", is_preview=True)
+        c.argument("backup_configuration_parameters", type=validate_file_or_dict, help="Backup configuration overrides.", is_preview=True)
         # In update scenario, use emtpy str as default.
         c.argument('ssh_access', arg_type=get_enum_type(ssh_accesses), is_preview=True)
         c.argument('enable_static_egress_gateway', is_preview=True, action='store_true')

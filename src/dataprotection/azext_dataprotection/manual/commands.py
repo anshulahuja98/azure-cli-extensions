@@ -122,3 +122,9 @@ def load_command_table(self, _):
 
     with self.command_group('dataprotection recovery-point', exception_handler=exception_handler) as g:
         g.custom_command('list', 'dataprotection_recovery_point_list')
+
+    with self.command_group('dataprotection enable-backup', exception_handler=exception_handler) as g:
+        g.custom_command('initialize', 'dataprotection_enable_backup', supports_no_wait=False)        
+        g.custom_command('fix', 'dataprotection_enable_backup', supports_no_wait=True)
+        g.custom_command('debug', 'dataprotection_enable_backup', supports_no_wait=True)
+    

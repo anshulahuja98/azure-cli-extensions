@@ -871,6 +871,10 @@ def aks_update(
     # IMDS restriction
     enable_imds_restriction=False,
     disable_imds_restriction=False,
+    # Backup
+    enable_backup=False,
+    backup_strategy=None,
+    backup_configuration_parameters=None,
 ):
     # DO NOT MOVE: get all the original parameters and save them as a dictionary
     raw_parameters = locals()

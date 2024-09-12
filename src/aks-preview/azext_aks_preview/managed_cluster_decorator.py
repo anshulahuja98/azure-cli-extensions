@@ -6,6 +6,7 @@
 # pylint: disable=too-many-lines
 import copy
 import datetime
+import json
 import os
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, TypeVar, Union
@@ -5456,8 +5457,34 @@ class AKSPreviewManagedClusterUpdateDecorator(AKSManagedClusterUpdateDecorator):
         # update static egress gateway
         mc = self.update_static_egress_gateway(mc)
         # update imds restriction
-        mc = self.update_imds_restriction(mc)
+        mc = self.update_imds_restriction(mc)        
+         # set up backup
+        mc = self.set_up_backup(mc)
 
+        
+
+        return mc
+
+    def set_up_backup(self, mc: ManagedCluster) -> ManagedCluster:
+
+        enable_backup = self.context.raw_param.get("enable_backup")
+        if enable_backup:
+            from azext_dataprotection.manual.enums import    backup_presets
+
+            backup_strategy = self.context.raw_param.get("backup_strategy")
+            backup_configuration_parameters = self.context.raw_param.get("backup_configuration_parameters")
+            from msrestazure.tools import resource_id
+
+            cluster_resource_id = resource_id(
+                                    subscription=self.context.get_subscription_id(),
+                                    resource_group=self.context.get_resource_group_name(),
+                                    namespace="Microsoft.ContainerService",
+                                    type="managedClusters",
+                                    name=self.context.get_name(),
+                                )
+        
+            from azext_dataprotection.manual.aks.akshelper import dataprotection_enable_backup_helper
+            dataprotection_enable_backup_helper(str(cluster_resource_id), json.dumps(backup_strategy),  json.dumps(backup_configuration_parameters))
         return mc
 
     def check_is_postprocessing_required(self, mc: ManagedCluster) -> bool:

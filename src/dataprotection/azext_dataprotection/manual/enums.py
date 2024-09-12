@@ -92,3 +92,13 @@ def get_persistent_volume_restore_mode_values():
 
 def get_conflict_policy_values():
     return ['Skip', 'Patch']
+
+CONST_RECOMMENDED = 'Recommended'
+CONST_DEFAULT = 'Default'
+CONST_DAILY = 'Daily'
+
+backup_presets = [
+    CONST_RECOMMENDED,
+    CONST_DEFAULT,
+    CONST_DAILY
+]
