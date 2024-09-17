@@ -1019,6 +1019,11 @@ def restore_initialize_for_item_recovery(cmd, datasource_type, source_datastore,
     return restore_request
 
 def dataprotection_enable_backup(cmd, datasource_uri: str, backup_strategy=CONST_RECOMMENDED, configuration_params=None):
-    
-    from azext_dataprotection.manual.aks.akshelper import dataprotection_enable_backup_helper
-    dataprotection_enable_backup_helper( datasource_uri, backup_strategy, configuration_params)
+
+    # if uri contains case insensitive Microsoft.ContainerService/managedClusters contains and add if check
+    if "Microsoft.ContainerService/managedClusters".lower() in datasource_uri.lower():
+        from azext_dataprotection.manual.aks.akshelper import dataprotection_enable_backup_helper
+        dataprotection_enable_backup_helper(cmd.cli_ctx, datasource_uri, backup_strategy, configuration_params)
+        return
+    else: 
+        raise InvalidArgumentValueError("Unsupported datasource type for command")
