@@ -5483,7 +5483,7 @@ class AKSPreviewManagedClusterUpdateDecorator(AKSManagedClusterUpdateDecorator):
                                     name=self.context.get_name(),
                                 )
         
-            from azext_dataprotection.manual.aks.akshelper import dataprotection_enable_backup_helper
+            from azext_dataprotection.manual.aks.aks_helper import dataprotection_enable_backup_helper
             dataprotection_enable_backup_helper(str(cluster_resource_id), json.dumps(backup_strategy),  json.dumps(backup_configuration_parameters))
         return mc
 

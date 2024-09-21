@@ -1022,7 +1022,7 @@ def dataprotection_enable_backup(cmd, datasource_uri: str, backup_strategy=CONST
 
     # if uri contains case insensitive Microsoft.ContainerService/managedClusters contains and add if check
     if "Microsoft.ContainerService/managedClusters".lower() in datasource_uri.lower():
-        from azext_dataprotection.manual.aks.akshelper import dataprotection_enable_backup_helper
+        from azext_dataprotection.manual.aks.aks_helper import dataprotection_enable_backup_helper
         dataprotection_enable_backup_helper(cmd, datasource_uri, backup_strategy, configuration_params)
         return
     else: 
