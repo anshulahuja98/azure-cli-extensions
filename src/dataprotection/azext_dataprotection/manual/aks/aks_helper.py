@@ -79,9 +79,12 @@ def __check_and_assign_role(
             logger.info(f"Role '{role}' already assigned to {identity_name} on scope {scope[:50]}...")
             print(f"\tRole '{role}' already assigned to {identity_name}")
             return True
-    except (HttpResponseError, Exception) as e:
+    except HttpResponseError as e:
         # If we can't list, log warning and try to create
-        logger.warning(f"Could not list role assignments: {str(e)[:100]}")
+        logger.warning(f"Could not list role assignments (HttpResponseError): {str(e)[:100]}")
+    except Exception as e:
+        # Catch other unexpected errors during role listing
+        logger.warning(f"Could not list role assignments (unexpected error): {str(e)[:100]}")
     
     # Try to create the role assignment with retries for transient failures
     last_error = None
@@ -333,7 +336,7 @@ def __check_existing_backup_instance(resource_client, datasource_id: str, cluste
         error_info = ""
         if protection_error:
             error_msg = protection_error.get('message', str(protection_error)) if isinstance(protection_error, dict) else str(protection_error)
-            # Fix inconsistent indentation in error message
+            # Truncate long error messages for better readability
             if len(str(error_msg)) > 100:
                 print(f"\t\t- Error Details:   {error_msg[:100]}...")
             else:
