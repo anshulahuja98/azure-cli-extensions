@@ -18,10 +18,12 @@ Key Functions:
 """
 
 import json
+import time
 from typing import Dict, Any, Optional, Tuple
 from azure.cli.core.azclierror import InvalidArgumentValueError
 from azure.cli.core.commands.client_factory import get_mgmt_service_client
 from azure.mgmt.core.tools import parse_resource_id, is_valid_resource_id
+from azure.core.exceptions import HttpResponseError
 from knack.log import get_logger
 
 # Import constants
@@ -61,9 +63,7 @@ def __check_and_assign_role(
     Returns:
         True if role was assigned (new or existing), raises on failure
     """
-    import time
     from azure.cli.command_modules.role.custom import list_role_assignments, create_role_assignment
-    from azure.core.exceptions import HttpResponseError
     
     # Check if role assignment already exists
     try:
@@ -134,10 +134,11 @@ def __check_and_assign_role(
             break
     
     # If we get here, we've exhausted retries or hit a non-retryable error
-    logger.error(f"Final failure to assign role '{role}' to {identity_name}: {last_error[:200]}")
+    error_detail = str(last_error)[:200] if last_error else 'Unknown error'
+    logger.error(f"Final failure to assign role '{role}' to {identity_name}: {error_detail}")
     raise InvalidArgumentValueError(
         f"Failed to assign '{role}' role to {identity_name}.\n"
-        f"Error: {last_error}\n\n"
+        f"Error: {last_error if last_error else 'Unknown error'}\n\n"
         f"You can try to manually assign the role using:\n\n"
         f"  az role assignment create --role \"{role}\" --assignee \"{assignee}\" --scope \"{scope}\"\n\n"
         f"After the role is assigned, re-run this command."
