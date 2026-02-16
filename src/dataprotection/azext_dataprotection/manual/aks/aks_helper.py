@@ -1,15 +1,51 @@
+"""
+AKS Backup Helper Module for Azure Data Protection.
+
+This module provides functions to enable, configure, and manage backups for 
+Azure Kubernetes Service (AKS) clusters. It handles the complete backup setup workflow
+including resource group creation, storage account setup, backup vault configuration,
+policy management, and backup instance creation.
+
+Main entry point: dataprotection_enable_backup_helper()
+
+Key Functions:
+    - dataprotection_enable_backup_helper: Main function to enable backup for an AKS cluster
+    - __validate_request: Validate backup configuration parameters
+    - __check_and_assign_role: Assign required RBAC roles with retry logic
+    - __setup_backup_vault: Create or configure backup vault
+    - __setup_backup_policy: Create or update backup policy
+    - __create_backup_instance: Create backup instance for the cluster
+"""
+
 import json
+from typing import Dict, Any, Optional, Tuple
 from azure.cli.core.azclierror import InvalidArgumentValueError
 from azure.cli.core.commands.client_factory import get_mgmt_service_client
-from azure.mgmt.core.tools import parse_resource_id
+from azure.mgmt.core.tools import parse_resource_id, is_valid_resource_id
+from knack.log import get_logger
 
+# Import constants
+from azext_dataprotection.manual._consts import (
+    CONST_DATAPROTECTION_API_VERSION,
+    CONST_AKS_API_VERSION,
+)
+
+logger = get_logger(__name__)
 
 # Tag used to identify storage accounts created for AKS backup
 # Format: AKSAzureBackup: <location>
 AKS_BACKUP_TAG_KEY = "AKSAzureBackup"
 
 
-def __check_and_assign_role(cmd, role, assignee, scope, identity_name="identity", max_retries=3, retry_delay=10):
+def __check_and_assign_role(
+    cmd,
+    role: str,
+    assignee: str,
+    scope: str,
+    identity_name: str = "identity",
+    max_retries: int = 3,
+    retry_delay: int = 10
+) -> bool:
     """
     Check if a role assignment already exists, and create it if not.
     
@@ -40,11 +76,12 @@ def __check_and_assign_role(cmd, role, assignee, scope, identity_name="identity"
         )
         
         if existing_assignments:
+            logger.info(f"Role '{role}' already assigned to {identity_name} on scope {scope[:50]}...")
             print(f"\tRole '{role}' already assigned to {identity_name}")
             return True
-    except Exception:
-        # If we can't list, we'll try to create and handle any errors there
-        pass
+    except (HttpResponseError, Exception) as e:
+        # If we can't list, log warning and try to create
+        logger.warning(f"Could not list role assignments: {str(e)[:100]}")
     
     # Try to create the role assignment with retries for transient failures
     last_error = None
@@ -56,6 +93,8 @@ def __check_and_assign_role(cmd, role, assignee, scope, identity_name="identity"
                 assignee=assignee,
                 scope=scope
             )
+            # Audit log the role assignment
+            logger.info(f"Successfully assigned role '{role}' to principal {assignee} on scope {scope[:50]}...")
             print(f"\tRole '{role}' assigned to {identity_name}")
             return True
         except (HttpResponseError, Exception) as e:
@@ -64,11 +103,13 @@ def __check_and_assign_role(cmd, role, assignee, scope, identity_name="identity"
             
             # Check if this is a "already exists" conflict (409)
             if "already exists" in error_message.lower() or "conflict" in error_message.lower():
+                logger.info(f"Role '{role}' already assigned to {identity_name} (conflict detected)")
                 print(f"\tRole '{role}' already assigned to {identity_name}")
                 return True
             
             # Check if this is a permission/authorization error (not retryable)
             if "authorization" in error_message.lower() or "forbidden" in error_message.lower() or "permission" in error_message.lower():
+                logger.error(f"Insufficient permissions to assign role '{role}' to {assignee}")
                 raise InvalidArgumentValueError(
                     f"Failed to assign '{role}' role to {identity_name}.\n"
                     f"You don't have sufficient permissions to create role assignments.\n\n"
@@ -80,14 +121,17 @@ def __check_and_assign_role(cmd, role, assignee, scope, identity_name="identity"
             # Check if this is a "principal not found" error (retryable - identity propagation)
             if "cannot find" in error_message.lower() or "does not exist" in error_message.lower() or "principal" in error_message.lower():
                 if attempt < max_retries - 1:
+                    logger.info(f"Identity not yet propagated, retrying... (attempt {attempt + 1}/{max_retries})")
                     print(f"\tWaiting for identity to propagate... (attempt {attempt + 1}/{max_retries})")
                     time.sleep(retry_delay)
                     continue
             
-            # For other errors, don't retry
+            # For other errors, log and don't retry
+            logger.error(f"Failed to assign role: {error_message[:200]}")
             break
     
     # If we get here, we've exhausted retries or hit a non-retryable error
+    logger.error(f"Final failure to assign role '{role}' to {identity_name}: {last_error[:200]}")
     raise InvalidArgumentValueError(
         f"Failed to assign '{role}' role to {identity_name}.\n"
         f"Error: {last_error}\n\n"
@@ -97,7 +141,11 @@ def __check_and_assign_role(cmd, role, assignee, scope, identity_name="identity"
     )
 
 
-def __validate_request(datasource_id, backup_strategy, configuration_params):
+def __validate_request(
+    datasource_id: str,
+    backup_strategy: str,
+    configuration_params: Optional[Dict[str, Any]]
+) -> None:
     """
     Validate the request parameters. Raises InvalidArgumentValueError on validation failure.
     
@@ -116,22 +164,44 @@ def __validate_request(datasource_id, backup_strategy, configuration_params):
     if configuration_params is None:
         configuration_params = {}
     
-    # Parse if string
+    # Parse if string and validate JSON structure
     if isinstance(configuration_params, str):
         try:
-            json.loads(configuration_params)
-        except json.JSONDecodeError:
-            raise InvalidArgumentValueError("Invalid JSON in backup-configuration-file")
+            parsed_config = json.loads(configuration_params)
+            if not isinstance(parsed_config, dict):
+                raise InvalidArgumentValueError(
+                    "Invalid JSON in backup-configuration-file: expected a JSON object (dictionary)"
+                )
+        except json.JSONDecodeError as e:
+            raise InvalidArgumentValueError(f"Invalid JSON in backup-configuration-file: {str(e)}")
     
     # Validate Custom strategy requirements
     if backup_strategy == 'Custom':
-        if not configuration_params.get("backupVaultId"):
+        backup_vault_id = configuration_params.get("backupVaultId")
+        backup_policy_id = configuration_params.get("backupPolicyId")
+        
+        if not backup_vault_id:
             raise InvalidArgumentValueError(
                 "backupVaultId is required in --backup-configuration-file when using Custom strategy"
             )
-        if not configuration_params.get("backupPolicyId"):
+        if not backup_policy_id:
             raise InvalidArgumentValueError(
                 "backupPolicyId is required in --backup-configuration-file when using Custom strategy"
+            )
+        
+        # Validate ARM resource ID format for custom strategy resources
+        if not is_valid_resource_id(backup_vault_id):
+            raise InvalidArgumentValueError(
+                f"Invalid ARM resource ID format for backupVaultId: {backup_vault_id}\n"
+                f"Expected format: /subscriptions/{{subscriptionId}}/resourceGroups/{{resourceGroupName}}/"
+                f"providers/Microsoft.DataProtection/backupVaults/{{vaultName}}"
+            )
+        
+        if not is_valid_resource_id(backup_policy_id):
+            raise InvalidArgumentValueError(
+                f"Invalid ARM resource ID format for backupPolicyId: {backup_policy_id}\n"
+                f"Expected format: /subscriptions/{{subscriptionId}}/resourceGroups/{{resourceGroupName}}/"
+                f"providers/Microsoft.DataProtection/backupVaults/{{vaultName}}/backupPolicies/{{policyName}}"
             )
 
     # Parse cluster subscription for validation
@@ -141,6 +211,10 @@ def __validate_request(datasource_id, backup_strategy, configuration_params):
     # Validate provided resource IDs are in the same subscription as cluster
     backup_resource_group_id = configuration_params.get("backupResourceGroupId")
     if backup_resource_group_id:
+        if not is_valid_resource_id(backup_resource_group_id):
+            raise InvalidArgumentValueError(
+                f"Invalid ARM resource ID format for backupResourceGroupId: {backup_resource_group_id}"
+            )
         rg_parts = parse_resource_id(backup_resource_group_id)
         if rg_parts['subscription'].lower() != cluster_subscription_id.lower():
             raise InvalidArgumentValueError(
@@ -150,6 +224,10 @@ def __validate_request(datasource_id, backup_strategy, configuration_params):
     
     storage_account_id = configuration_params.get("storageAccountResourceId")
     if storage_account_id:
+        if not is_valid_resource_id(storage_account_id):
+            raise InvalidArgumentValueError(
+                f"Invalid ARM resource ID format for storageAccountResourceId: {storage_account_id}"
+            )
         sa_parts = parse_resource_id(storage_account_id)
         if sa_parts['subscription'].lower() != cluster_subscription_id.lower():
             raise InvalidArgumentValueError(
@@ -159,6 +237,10 @@ def __validate_request(datasource_id, backup_strategy, configuration_params):
     
     backup_vault_id = configuration_params.get("backupVaultId")
     if backup_vault_id:
+        if not is_valid_resource_id(backup_vault_id):
+            raise InvalidArgumentValueError(
+                f"Invalid ARM resource ID format for backupVaultId: {backup_vault_id}"
+            )
         vault_parts = parse_resource_id(backup_vault_id)
         if vault_parts['subscription'].lower() != cluster_subscription_id.lower():
             raise InvalidArgumentValueError(
@@ -167,15 +249,24 @@ def __validate_request(datasource_id, backup_strategy, configuration_params):
             )
 
 
-def __check_existing_backup_instance(resource_client, datasource_id, cluster_name):
+def __check_existing_backup_instance(resource_client, datasource_id: str, cluster_name: str) -> None:
     """
     Check if a backup instance already exists for this cluster using extension routing.
     
     Calls: GET {datasource_id}/providers/Microsoft.DataProtection/backupInstances
     
+    Args:
+        resource_client: Azure resource management client
+        datasource_id: Full ARM resource ID of the AKS cluster
+        cluster_name: Name of the cluster
+        
     Returns:
-        None if no backup instance exists, raises error with details if one exists
+        None if no backup instance exists
+        
+    Raises:
+        InvalidArgumentValueError: If a backup instance already exists for this cluster
     """
+    logger.info(f"Checking for existing backup instance for cluster: {cluster_name}")
     print(f"\tChecking for existing backup configuration...")
     
     try:
@@ -183,7 +274,7 @@ def __check_existing_backup_instance(resource_client, datasource_id, cluster_nam
         extension_resource_id = f"{datasource_id}/providers/Microsoft.DataProtection/backupInstances"
         response = resource_client.resources.get_by_id(
             extension_resource_id, 
-            api_version="2024-04-01"
+            api_version=CONST_DATAPROTECTION_API_VERSION
         )
         
         # Parse the response to get backup instances list
@@ -197,32 +288,42 @@ def __check_existing_backup_instance(resource_client, datasource_id, cluster_nam
         
         # If list is empty, no backup instance exists
         if not bi_list:
+            logger.info("No existing backup instance found")
             print(f"\tNo existing backup instance found")
             return None
         
-        # Get details of the first backup instance
+        # Get details of the first backup instance with null checks
         bi = bi_list[0] if isinstance(bi_list, list) else bi_list
         bi_id = bi.get('id', 'Unknown') if isinstance(bi, dict) else getattr(bi, 'id', 'Unknown')
         bi_name = bi.get('name', 'Unknown') if isinstance(bi, dict) else getattr(bi, 'name', 'Unknown')
         
-        # Get protection status from properties
-        bi_properties = bi.get('properties', {}) if isinstance(bi, dict) else getattr(bi, 'properties', {})
-        if isinstance(bi_properties, dict):
-            protection_status = bi_properties.get('currentProtectionState', 'Unknown')
-            protection_error = bi_properties.get('protectionErrorDetails', None)
-        else:
-            protection_status = getattr(bi_properties, 'current_protection_state', 'Unknown')
-            protection_error = getattr(bi_properties, 'protection_error_details', None)
+        # Get protection status from properties with null checks
+        bi_properties = bi.get('properties') if isinstance(bi, dict) else getattr(bi, 'properties', None)
+        protection_status = 'Unknown'
+        protection_error = None
         
-        # Parse vault info from the BI resource ID
+        if bi_properties:
+            if isinstance(bi_properties, dict):
+                protection_status = bi_properties.get('currentProtectionState', 'Unknown')
+                protection_error = bi_properties.get('protectionErrorDetails')
+            else:
+                protection_status = getattr(bi_properties, 'current_protection_state', 'Unknown')
+                protection_error = getattr(bi_properties, 'protection_error_details', None)
+        
+        # Parse vault info from the BI resource ID with null checks
         # Format: /subscriptions/.../resourceGroups/.../providers/Microsoft.DataProtection/backupVaults/{vault}/backupInstances/{bi}
         vault_name = "Unknown"
         vault_rg = "Unknown"
         if bi_id and '/backupVaults/' in str(bi_id):
-            bi_parts = parse_resource_id(bi_id)
-            vault_name = bi_parts.get('name', 'Unknown')
-            vault_rg = bi_parts.get('resource_group', 'Unknown')
+            try:
+                bi_parts = parse_resource_id(bi_id)
+                if bi_parts:
+                    vault_name = bi_parts.get('name', 'Unknown')
+                    vault_rg = bi_parts.get('resource_group', 'Unknown')
+            except Exception as e:
+                logger.warning(f"Could not parse backup instance resource ID: {str(e)[:100]}")
         
+        logger.info(f"Found existing backup instance: {bi_name} in vault: {vault_name}")
         print(f"\tFound existing backup instance!")
         print(f"\t\t- Backup Instance: {bi_name}")
         print(f"\t\t- Backup Vault:    {vault_name}")
@@ -232,7 +333,11 @@ def __check_existing_backup_instance(resource_client, datasource_id, cluster_nam
         error_info = ""
         if protection_error:
             error_msg = protection_error.get('message', str(protection_error)) if isinstance(protection_error, dict) else str(protection_error)
-            print(f"\t\t- Error Details:   {error_msg[:100]}..." if len(str(error_msg)) > 100 else f"        - Error Details:   {error_msg}")
+            # Fix inconsistent indentation in error message
+            if len(str(error_msg)) > 100:
+                print(f"\t\t- Error Details:   {error_msg[:100]}...")
+            else:
+                print(f"\t\t- Error Details:   {error_msg}")
             error_info = f"\n  Protection Error: {error_msg}\n"
         
         raise InvalidArgumentValueError(
@@ -258,20 +363,35 @@ def __check_existing_backup_instance(resource_client, datasource_id, cluster_nam
         # 404 or other errors mean no backup instance exists - that's fine
         error_str = str(e).lower()
         if "not found" in error_str or "404" in error_str or "does not exist" in error_str:
+            logger.info("No existing backup instance found (404 or not found)")
             print(f"\tNo existing backup instance found")
             return None
         # For other errors, log and continue (don't block on extension routing failures)
+        logger.warning(f"Could not check for existing backup instance: {str(e)[:100]}")
         print(f"\tCould not check for existing backup (will proceed): {str(e)[:100]}")
         return None
     
+    logger.info("No existing backup instance found")
     print(f"\tNo existing backup instance found")
     return None
 
 
-def __validate_cluster(resource_client, datasource_id, cluster_name):
-    """Validate the AKS cluster exists and get its details."""
-    cluster_resource = resource_client.resources.get_by_id(datasource_id, api_version="2024-08-01")
+def __validate_cluster(resource_client, datasource_id: str, cluster_name: str) -> Tuple[Any, str]:
+    """
+    Validate the AKS cluster exists and get its details.
+    
+    Args:
+        resource_client: Azure resource management client
+        datasource_id: Full ARM resource ID of the AKS cluster
+        cluster_name: Name of the cluster
+        
+    Returns:
+        Tuple of (cluster_resource, cluster_location)
+    """
+    logger.info(f"Validating cluster: {cluster_name}")
+    cluster_resource = resource_client.resources.get_by_id(datasource_id, api_version=CONST_AKS_API_VERSION)
     cluster_location = cluster_resource.location
+    logger.info(f"Cluster validated - Location: {cluster_location}")
     print(f"\tCluster: {cluster_name}")
     print(f"\tLocation: {cluster_location}")
     print(f"\t[OK] Cluster validated")
@@ -452,30 +572,46 @@ def __install_backup_extension(cmd, cluster_subscription_id, cluster_resource_gr
     return backup_extension
 
 
-def __find_existing_backup_vault(cmd, cluster_subscription_id, cluster_location):
+def __find_existing_backup_vault(cmd, cluster_subscription_id: str, cluster_location: str) -> Optional[Dict[str, Any]]:
     """
     Search for an existing AKS backup vault in the subscription by tag.
     
     Looks for backup vaults with tag: AKSAzureBackup = <location>
     
+    Args:
+        cmd: CLI command context
+        cluster_subscription_id: Subscription ID of the cluster
+        cluster_location: Azure region of the cluster
+        
     Returns:
-        backup_vault if found, None otherwise
+        Backup vault dict if found, None otherwise
     """
     from azext_dataprotection.aaz.latest.dataprotection.backup_vault import List as _BackupVaultList
     
     try:
+        logger.info(f"Searching for existing backup vault in subscription with tag {AKS_BACKUP_TAG_KEY}={cluster_location}")
         # List all backup vaults in the subscription
         vaults = _BackupVaultList(cli_ctx=cmd.cli_ctx)(command_args={})
         
-        for vault in vaults:
-            if vault.get('tags'):
-                # Check if this vault has the AKS backup tag matching the location
-                tag_value = vault['tags'].get(AKS_BACKUP_TAG_KEY)
-                if tag_value and tag_value.lower() == cluster_location.lower():
-                    return vault
-    except Exception:
-        # If we can't list vaults, we'll create a new one
-        pass
+        # Normalize location once for comparison
+        normalized_location = cluster_location.lower()
+        
+        # Use list comprehension for more efficient filtering
+        matching_vaults = [
+            vault for vault in vaults
+            if vault.get('tags') and 
+            vault['tags'].get(AKS_BACKUP_TAG_KEY, '').lower() == normalized_location
+        ]
+        
+        if matching_vaults:
+            logger.info(f"Found existing backup vault: {matching_vaults[0].get('name', 'Unknown')}")
+            return matching_vaults[0]
+            
+        logger.info("No existing backup vault found")
+    except Exception as e:
+        # If we can't list vaults, log and create a new one
+        logger.warning(f"Could not list backup vaults: {str(e)[:100]}")
+    
     return None
 
 
